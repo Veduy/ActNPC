@@ -1,16 +1,8 @@
-using System;
-using System.Collections;
-using System.Text;
 using UnityEngine;
-using UnityEngine.Networking;
-using UnityEngine.InputSystem;
 using UnityEngine.AI;
 
 public class act_npc_controller : MonoBehaviour
 {
-    [SerializeField] private string backendCommandUrl = "http://localhost:8000/command";
-    [TextArea]
-    [SerializeField] private string testCommandMessage = "\uC0AC\uACFC\uB97C \uAC00\uC838\uC640";
     [SerializeField] private Rigidbody rb;
 
     [SerializeField] private Transform destination;
@@ -31,12 +23,6 @@ public class act_npc_controller : MonoBehaviour
 
     private void Update()
     {
-        if (Keyboard.current.spaceKey.wasPressedThisFrame)
-        {
-            Debug.Log("Send Command Message");
-            SendCommandToBackend(testCommandMessage);
-        }
-
         if(HasArrived())
         {
             Debug.Log("Arrived destination!");
@@ -74,85 +60,6 @@ public class act_npc_controller : MonoBehaviour
                 message = $"Unsupported NPC action: {command.action}";
                 return false;
         }
-    }
-
-    public void SendCommandToBackend(string commandMessage)
-    {
-        StartCoroutine(PostCommandToBackend(commandMessage));
-    }
-
-    private IEnumerator PostCommandToBackend(string commandMessage)
-    {
-        if (string.IsNullOrWhiteSpace(commandMessage))
-        {
-            Debug.LogError("Backend command request failed: message is required.");
-            yield break;
-        }
-
-        CommandRequest payload = new CommandRequest
-        {
-            message = commandMessage
-        };
-
-        string json = JsonUtility.ToJson(payload);
-        byte[] body = Encoding.UTF8.GetBytes(json);
-
-        using UnityWebRequest request = new UnityWebRequest(backendCommandUrl, UnityWebRequest.kHttpVerbPOST);
-        request.uploadHandler = new UploadHandlerRaw(body);
-        request.downloadHandler = new DownloadHandlerBuffer();
-        request.SetRequestHeader("Content-Type", "application/json; charset=utf-8");
-        request.SetRequestHeader("Accept", "application/json");
-
-        yield return request.SendWebRequest();
-
-        if (request.result != UnityWebRequest.Result.Success)
-        {
-            Debug.LogError($"Backend command request failed: {request.responseCode} {request.error}");
-            yield break;
-        }
-
-        HandleBackendCommandResponse(request.downloadHandler.text);
-    }
-
-    private void HandleBackendCommandResponse(string responseJson)
-    {
-        CommandBackendResponse response;
-
-        try
-        {
-            response = JsonUtility.FromJson<CommandBackendResponse>(responseJson);
-        }
-        catch (Exception exc)
-        {
-            Debug.LogError($"Backend command response parse failed: {exc.Message}");
-            return;
-        }
-
-        if (response == null)
-        {
-            Debug.LogError("Backend command response parse failed: response is empty.");
-            return;
-        }
-
-        if (!string.Equals(response.status, "ok", StringComparison.OrdinalIgnoreCase))
-        {
-            Debug.LogError($"Backend command failed: status={response.status}");
-            return;
-        }
-
-        if (response.command == null)
-        {
-            Debug.LogError("Backend command response did not include a command.");
-            return;
-        }
-
-        if (!TryAct(response.command, out string actMessage))
-        {
-            Debug.LogWarning($"NPC command was not executed: {actMessage}");
-            return;
-        }
-
-        Debug.Log($"NPC command handled: {actMessage}");
     }
 
     private bool TryMoveTo(string destination, out string message)
@@ -235,20 +142,6 @@ public class act_npc_controller : MonoBehaviour
     private static string FirstNonEmpty(string primary, string fallback)
     {
         return string.IsNullOrWhiteSpace(primary) ? fallback : primary;
-    }
-
-    [System.Serializable]
-    private class CommandRequest
-    {
-        public string message;
-    }
-
-    [System.Serializable]
-    private class CommandBackendResponse
-    {
-        public string status;
-        public string input;
-        public NpcCommand command;
     }
 
     [System.Serializable]
