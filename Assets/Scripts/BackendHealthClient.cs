@@ -1,12 +1,17 @@
 using System;
 using System.Collections;
+using System.Net.WebSockets;
+using System.Threading;
+using System.Threading.Tasks;
 using UnityEngine;
 using UnityEngine.Networking;
 
 public class BackendHealthClient : MonoBehaviour
 {
     [SerializeField] private string backendBaseUrl = "http://localhost:8000";
+    [SerializeField] private string backendWebSocketUrl = "ws://localhost:8000/ws/agent";
     [SerializeField] private bool requestOnStart = true;
+    [SerializeField] private bool checkWebSocketOnStart = false;
     [TextArea]
     [SerializeField] private string openAiHealthMessage = "Hello";
 
@@ -16,6 +21,11 @@ public class BackendHealthClient : MonoBehaviour
         {
             CheckHealth();
             CheckOpenAiHealth();
+
+            if (checkWebSocketOnStart)
+            {
+                CheckWebSocketHealth();
+            }
         }
     }
 
@@ -32,6 +42,11 @@ public class BackendHealthClient : MonoBehaviour
     public void CheckOpenAiHealth(string message)
     {
         StartCoroutine(GetOpenAiHealth(message));
+    }
+
+    public async void CheckWebSocketHealth()
+    {
+        await CheckWebSocketConnection();
     }
 
     private IEnumerator GetHealth()
@@ -85,6 +100,28 @@ public class BackendHealthClient : MonoBehaviour
         Debug.Log(
             $"OpenAI health check OK: status={response.status}, input={response.input}, response={response.GetResponseText()}"
         );
+    }
+
+    private async Task CheckWebSocketConnection()
+    {
+        ClientWebSocket socket = new ClientWebSocket();
+        CancellationTokenSource cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+
+        try
+        {
+            await socket.ConnectAsync(new Uri(backendWebSocketUrl), cancellation.Token);
+            Debug.Log($"WebSocket health check OK: url={backendWebSocketUrl}, state={socket.State}");
+            await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Health check complete", CancellationToken.None);
+        }
+        catch (Exception exc)
+        {
+            Debug.LogError($"WebSocket health check failed: {exc.Message}");
+        }
+        finally
+        {
+            socket.Dispose();
+            cancellation.Dispose();
+        }
     }
 
     [Serializable]

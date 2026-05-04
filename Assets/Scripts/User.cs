@@ -1,9 +1,12 @@
 using System;
-using System.Collections;
+using System.Collections.Concurrent;
+using System.IO;
+using System.Net.WebSockets;
 using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
 using UnityEngine;
 using UnityEngine.InputSystem;
-using UnityEngine.Networking;
 using TMPro;
 
 public class User : MonoBehaviour
@@ -14,10 +17,14 @@ public class User : MonoBehaviour
     [SerializeField] private float mouseSensitivity = 0.1f;
 
     [Header("Command")]
-    [SerializeField] private string backendCommandUrl = "http://localhost:8000/command";
+    [SerializeField] private string backendWebSocketUrl = "ws://localhost:8000/ws/agent";
+    [SerializeField] private bool connectOnStart = true;
     [SerializeField] private TMP_InputField commandInputField;
     [SerializeField] private act_npc_controller npcController;
 
+    private readonly ConcurrentQueue<Action> mainThreadActions = new ConcurrentQueue<Action>();
+    private ClientWebSocket webSocket;
+    private CancellationTokenSource webSocketCancellation;
     private float yaw;
     private float pitch;
 
@@ -38,6 +45,14 @@ public class User : MonoBehaviour
         }
     }
 
+    private void Start()
+    {
+        if (connectOnStart)
+        {
+            ConnectToBackend();
+        }
+    }
+
     private void OnEnable()
     {
         if (commandInputField != null)
@@ -46,16 +61,20 @@ public class User : MonoBehaviour
         }
     }
 
-    private void OnDisable()
+    private async void OnDisable()
     {
         if (commandInputField != null)
         {
             commandInputField.onSubmit.RemoveListener(SubmitCommandFromInput);
         }
+
+        await CloseBackendConnection();
     }
 
     private void Update()
     {
+        DrainMainThreadActions();
+
         Mouse mouse = Mouse.current;
         Keyboard keyboard = Keyboard.current;
 
@@ -92,7 +111,6 @@ public class User : MonoBehaviour
             return;
         }
 
-        Debug.Log("Send Command Message");
         SendCommandToBackend(commandMessage.Trim());
 
         commandInputField.text = string.Empty;
@@ -153,42 +171,167 @@ public class User : MonoBehaviour
         transform.position += direction * speed * Time.deltaTime;
     }
 
-    public void SendCommandToBackend(string commandMessage)
+    public async void ConnectToBackend()
     {
-        StartCoroutine(PostCommandToBackend(commandMessage));
+        await ConnectToBackendAsync();
     }
 
-    private IEnumerator PostCommandToBackend(string commandMessage)
+    private async Task<bool> ConnectToBackendAsync()
+    {
+        if (webSocket != null && webSocket.State == WebSocketState.Open)
+        {
+            return true;
+        }
+
+        webSocketCancellation?.Cancel();
+        webSocketCancellation = new CancellationTokenSource();
+        webSocket = new ClientWebSocket();
+
+        try
+        {
+            await webSocket.ConnectAsync(new Uri(backendWebSocketUrl), webSocketCancellation.Token);
+            Debug.Log($"Backend WebSocket connected: {backendWebSocketUrl}");
+            _ = ReceiveBackendMessages(webSocketCancellation.Token);
+            return true;
+        }
+        catch (Exception exc)
+        {
+            Debug.LogError($"Backend WebSocket connection failed: {exc.Message}");
+            return false;
+        }
+    }
+
+    public async void SendCommandToBackend(string commandMessage)
     {
         if (string.IsNullOrWhiteSpace(commandMessage))
         {
             Debug.LogError("Backend command request failed: message is required.");
-            yield break;
+            return;
         }
 
-        CommandRequest payload = new CommandRequest
+        if (webSocket == null || webSocket.State != WebSocketState.Open)
         {
-            message = commandMessage
+            bool connected = await ConnectToBackendAsync();
+            if (!connected)
+            {
+                Debug.LogError("Backend command request failed: WebSocket connection is not available.");
+                return;
+            }
+        }
+
+        await SendText(commandMessage);
+        Debug.Log($"Sent command message: {commandMessage}");
+    }
+
+    private async Task ReceiveBackendMessages(CancellationToken cancellationToken)
+    {
+        byte[] buffer = new byte[4096];
+
+        try
+        {
+            while (!cancellationToken.IsCancellationRequested && webSocket.State == WebSocketState.Open)
+            {
+                MemoryStream messageStream = new MemoryStream();
+                WebSocketReceiveResult result;
+
+                try
+                {
+                    do
+                    {
+                        result = await webSocket.ReceiveAsync(new ArraySegment<byte>(buffer), cancellationToken);
+
+                        if (result.MessageType == WebSocketMessageType.Close)
+                        {
+                            await CloseBackendConnection();
+                            return;
+                        }
+
+                        messageStream.Write(buffer, 0, result.Count);
+                    }
+                    while (!result.EndOfMessage);
+
+                    string message = Encoding.UTF8.GetString(messageStream.ToArray());
+                    mainThreadActions.Enqueue(() => HandleBackendMessage(message));
+                }
+                finally
+                {
+                    messageStream.Dispose();
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception exc)
+        {
+            Debug.LogError($"Backend WebSocket receive failed: {exc.Message}");
+        }
+    }
+
+    private void HandleBackendMessage(string responseJson)
+    {
+        BackendMessageEnvelope envelope;
+
+        try
+        {
+            envelope = JsonUtility.FromJson<BackendMessageEnvelope>(responseJson);
+        }
+        catch (Exception exc)
+        {
+            Debug.LogError($"Backend WebSocket message parse failed: {exc.Message}");
+            return;
+        }
+
+        if (envelope == null || string.IsNullOrWhiteSpace(envelope.type))
+        {
+            Debug.LogError($"Backend WebSocket message did not include a type: {responseJson}");
+            return;
+        }
+
+        switch (envelope.type)
+        {
+            case "client_function_call":
+                HandleClientFunctionCall(responseJson);
+                break;
+            case "final_command":
+                HandleBackendCommandResponse(responseJson);
+                break;
+            case "error":
+                Debug.LogError($"Backend error message: {responseJson}");
+                break;
+            default:
+                Debug.LogWarning($"Unsupported backend WebSocket message type: {envelope.type}");
+                break;
+        }
+    }
+
+    private void HandleClientFunctionCall(string responseJson)
+    {
+        ClientFunctionCall call = JsonUtility.FromJson<ClientFunctionCall>(responseJson);
+        ClientFunctionResult result = new ClientFunctionResult
+        {
+            type = "client_function_result",
+            call_id = call.call_id,
+            result = new act_npc_controller.ClientFunctionResult()
         };
 
-        string json = JsonUtility.ToJson(payload);
-        byte[] body = Encoding.UTF8.GetBytes(json);
-
-        using UnityWebRequest request = new UnityWebRequest(backendCommandUrl, UnityWebRequest.kHttpVerbPOST);
-        request.uploadHandler = new UploadHandlerRaw(body);
-        request.downloadHandler = new DownloadHandlerBuffer();
-        request.SetRequestHeader("Content-Type", "application/json; charset=utf-8");
-        request.SetRequestHeader("Accept", "application/json");
-
-        yield return request.SendWebRequest();
-
-        if (request.result != UnityWebRequest.Result.Success)
+        if (npcController == null)
         {
-            Debug.LogError($"Backend command request failed: {request.responseCode} {request.error}");
-            yield break;
+            result.result.ok = false;
+            result.result.error = CreateFunctionError("NPC_CONTROLLER_NOT_ASSIGNED", "NPC controller is not assigned.");
+            SendJson(JsonUtility.ToJson(result));
+            return;
         }
 
-        HandleBackendCommandResponse(request.downloadHandler.text);
+        if (!npcController.TryHandleClientFunction(call.function, call.args, out act_npc_controller.ClientFunctionResult functionResult))
+        {
+            result.result = functionResult;
+            SendJson(JsonUtility.ToJson(result));
+            return;
+        }
+
+        result.result = functionResult;
+        SendJson(JsonUtility.ToJson(result));
     }
 
     private void HandleBackendCommandResponse(string responseJson)
@@ -223,6 +366,11 @@ public class User : MonoBehaviour
             return;
         }
 
+        if (!string.IsNullOrWhiteSpace(response.command.message))
+        {
+            Debug.Log($"LLM response: {response.command.message}");
+        }
+
         if (npcController == null)
         {
             Debug.LogError("NPC controller is not assigned.");
@@ -238,20 +386,103 @@ public class User : MonoBehaviour
         Debug.Log($"NPC command handled: {actMessage}");
     }
 
+    private async void SendJson(string json)
+    {
+        await SendText(json);
+    }
+
+    private async Task SendText(string text)
+    {
+        if (webSocket == null || webSocket.State != WebSocketState.Open)
+        {
+            Debug.LogError("Backend WebSocket send failed: socket is not connected.");
+            return;
+        }
+
+        byte[] bytes = Encoding.UTF8.GetBytes(text);
+        await webSocket.SendAsync(
+            new ArraySegment<byte>(bytes),
+            WebSocketMessageType.Text,
+            true,
+            webSocketCancellation.Token
+        );
+    }
+
+    private async Task CloseBackendConnection()
+    {
+        webSocketCancellation?.Cancel();
+
+        if (webSocket != null)
+        {
+            try
+            {
+                if (webSocket.State == WebSocketState.Open || webSocket.State == WebSocketState.CloseReceived)
+                {
+                    await webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Unity client closing", CancellationToken.None);
+                }
+            }
+            catch (Exception exc)
+            {
+                Debug.LogWarning($"Backend WebSocket close failed: {exc.Message}");
+            }
+
+            webSocket.Dispose();
+            webSocket = null;
+        }
+
+        webSocketCancellation?.Dispose();
+        webSocketCancellation = null;
+    }
+
+    private void DrainMainThreadActions()
+    {
+        while (mainThreadActions.TryDequeue(out Action action))
+        {
+            action.Invoke();
+        }
+    }
+
+    private static act_npc_controller.ClientFunctionError CreateFunctionError(string code, string message)
+    {
+        return new act_npc_controller.ClientFunctionError
+        {
+            code = code,
+            message = message
+        };
+    }
+
     private static float NormalizePitch(float angle)
     {
         return angle > 180f ? angle - 360f : angle;
     }
 
     [Serializable]
-    private class CommandRequest
+    private class BackendMessageEnvelope
     {
-        public string message;
+        public string type;
+    }
+
+    [Serializable]
+    private class ClientFunctionCall
+    {
+        public string type;
+        public string call_id;
+        public string function;
+        public act_npc_controller.ClientFunctionArgs args;
+    }
+
+    [Serializable]
+    private class ClientFunctionResult
+    {
+        public string type;
+        public string call_id;
+        public act_npc_controller.ClientFunctionResult result;
     }
 
     [Serializable]
     private class CommandBackendResponse
     {
+        public string type;
         public string status;
         public string input;
         public act_npc_controller.NpcCommand command;
