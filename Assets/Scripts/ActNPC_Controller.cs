@@ -1,6 +1,7 @@
 using UnityEngine;
 using UnityEngine.AI;
 using System;
+using System.Collections;
 using System.Collections.Generic;
 
 public class act_npc_controller : MonoBehaviour
@@ -11,6 +12,7 @@ public class act_npc_controller : MonoBehaviour
     private GameObject item;
     private NavMeshAgent navAgent;
     private bool hasActiveDestination;
+    private bool isExecutingActionQueue;
 
     private void Awake()
     {
@@ -25,7 +27,7 @@ public class act_npc_controller : MonoBehaviour
 
     private void Update()
     {
-        if(HasArrived())
+        if(!isExecutingActionQueue && HasArrived())
         {
             Debug.Log("Arrived destination!");
             hasActiveDestination = false;
@@ -39,6 +41,19 @@ public class act_npc_controller : MonoBehaviour
         {
             message = "NPC command is required.";
             return false;
+        }
+
+        if (command.actions != null && command.actions.Length > 0)
+        {
+            if (isExecutingActionQueue)
+            {
+                message = "NPC is already executing an action queue.";
+                return false;
+            }
+
+            StartCoroutine(ExecuteActionQueue(command.actions));
+            message = $"{gameObject.name} started action queue with {command.actions.Length} actions.";
+            return true;
         }
 
         string action = NormalizeAction(command.action);
@@ -99,6 +114,96 @@ public class act_npc_controller : MonoBehaviour
         Debug.Log($"NPC fetch requested: actor={gameObject.name}, item={item}");
 
         message = $"{gameObject.name} fetching {item}.";
+        return true;
+    }
+
+    private IEnumerator ExecuteActionQueue(NpcAction[] actions)
+    {
+        isExecutingActionQueue = true;
+
+        foreach (NpcAction action in actions)
+        {
+            if (action == null)
+            {
+                continue;
+            }
+
+            string normalizedCommand = NormalizeQueueCommand(action.command);
+            switch (normalizedCommand)
+            {
+                case "MOVE_TO":
+                    if (!TryStartMoveToTarget(action.target_id, out string moveMessage))
+                    {
+                        Debug.LogWarning($"Action queue failed: {moveMessage}");
+                        isExecutingActionQueue = false;
+                        yield break;
+                    }
+
+                    Debug.Log($"Action queue: {moveMessage}");
+                    yield return new WaitUntil(HasArrived);
+                    hasActiveDestination = false;
+                    Debug.Log($"Action queue MOVE_TO completed: target_id={action.target_id}");
+                    break;
+
+                case "GET_ITEM":
+                    if (!TryGetItem(action.target_id, out string getMessage))
+                    {
+                        Debug.LogWarning($"Action queue failed: {getMessage}");
+                        isExecutingActionQueue = false;
+                        yield break;
+                    }
+
+                    Debug.Log($"Action queue: {getMessage}");
+                    break;
+
+                default:
+                    Debug.LogWarning($"Action queue failed: unsupported command={action.command}");
+                    isExecutingActionQueue = false;
+                    yield break;
+            }
+        }
+
+        isExecutingActionQueue = false;
+        Debug.Log("NPC action queue completed.");
+    }
+
+    private bool TryStartMoveToTarget(string targetId, out string message)
+    {
+        if (string.IsNullOrWhiteSpace(targetId))
+        {
+            message = "MOVE_TO target_id is required.";
+            return false;
+        }
+
+        Item target = FindItem(targetId);
+        if (target == null)
+        {
+            message = $"MOVE_TO target was not found: {targetId}";
+            return false;
+        }
+
+        SetDestination(target.transform.position);
+        message = $"{gameObject.name} moving to {targetId}.";
+        return true;
+    }
+
+    private bool TryGetItem(string targetId, out string message)
+    {
+        if (string.IsNullOrWhiteSpace(targetId))
+        {
+            message = "GET_ITEM target_id is required.";
+            return false;
+        }
+
+        Item target = FindItem(targetId);
+        if (target == null)
+        {
+            message = $"GET_ITEM target was not found: {targetId}";
+            return false;
+        }
+
+        target.gameObject.SetActive(false);
+        message = $"{gameObject.name} got item {targetId}.";
         return true;
     }
 
@@ -314,6 +419,13 @@ public class act_npc_controller : MonoBehaviour
         return normalizedAction;
     }
 
+    private static string NormalizeQueueCommand(string command)
+    {
+        return string.IsNullOrWhiteSpace(command)
+            ? string.Empty
+            : command.Trim().ToUpperInvariant();
+    }
+
     private static string FirstNonEmpty(params string[] values)
     {
         foreach (string value in values)
@@ -335,6 +447,15 @@ public class act_npc_controller : MonoBehaviour
         public string item;
         public string @object;
         public string message;
+        public NpcAction[] actions;
+    }
+
+    [System.Serializable]
+    public class NpcAction
+    {
+        public string action_id;
+        public string command;
+        public string target_id;
     }
 
     [Serializable]

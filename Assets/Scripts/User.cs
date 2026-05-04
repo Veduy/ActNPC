@@ -21,6 +21,7 @@ public class User : MonoBehaviour
     [SerializeField] private bool connectOnStart = true;
     [SerializeField] private TMP_InputField commandInputField;
     [SerializeField] private act_npc_controller npcController;
+    [SerializeField] private NPCSpeechBubble npcSpeechBubble;
 
     private readonly ConcurrentQueue<Action> mainThreadActions = new ConcurrentQueue<Action>();
     private ClientWebSocket webSocket;
@@ -42,6 +43,11 @@ public class User : MonoBehaviour
         if (commandInputField == null)
         {
             commandInputField = FindFirstObjectByType<TMP_InputField>();
+        }
+
+        if (npcSpeechBubble == null)
+        {
+            npcSpeechBubble = FindFirstObjectByType<NPCSpeechBubble>();
         }
     }
 
@@ -369,6 +375,10 @@ public class User : MonoBehaviour
         if (!string.IsNullOrWhiteSpace(response.command.message))
         {
             Debug.Log($"LLM response: {response.command.message}");
+            if (npcSpeechBubble != null)
+            {
+                npcSpeechBubble.Say(response.command.message);
+            }
         }
 
         if (npcController == null)
