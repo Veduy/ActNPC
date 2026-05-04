@@ -14,7 +14,7 @@ public class act_npc_controller : MonoBehaviour
 
     private void Awake()
     {
-        rb = GetComponent<Rigidbody>(); 
+        rb = GetComponent<Rigidbody>();
         navAgent = GetComponent<NavMeshAgent>();
     }
     
@@ -70,7 +70,7 @@ public class act_npc_controller : MonoBehaviour
         {
             message = "Move destination is required.";
             return false;
-        }   
+        }
 
         Item foundItem = FindItem(destination);
         if (foundItem == null)
