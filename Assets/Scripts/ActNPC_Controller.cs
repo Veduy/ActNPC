@@ -12,7 +12,8 @@ public class act_npc_controller : MonoBehaviour
     private GameObject item;
     private NavMeshAgent navAgent;
     private bool hasActiveDestination;
-    private bool isExecutingActionQueue;
+    private readonly Queue<NpcAction> actionQueue = new Queue<NpcAction>();
+    private Coroutine actionQueueRoutine;
 
     private void Awake()
     {
@@ -27,7 +28,7 @@ public class act_npc_controller : MonoBehaviour
 
     private void Update()
     {
-        if(!isExecutingActionQueue && HasArrived())
+        if(actionQueueRoutine == null && HasArrived())
         {
             Debug.Log("Arrived destination!");
             hasActiveDestination = false;
@@ -45,14 +46,20 @@ public class act_npc_controller : MonoBehaviour
 
         if (command.actions != null && command.actions.Length > 0)
         {
-            if (isExecutingActionQueue)
+            if (ContainsStopAction(command.actions))
             {
-                message = "NPC is already executing an action queue.";
-                return false;
+                StopCurrentActions();
+                message = $"{gameObject.name} stopped current actions.";
+                return true;
             }
 
-            StartCoroutine(ExecuteActionQueue(command.actions));
-            message = $"{gameObject.name} started action queue with {command.actions.Length} actions.";
+            int enqueuedCount = EnqueueActions(command.actions);
+            if (actionQueueRoutine == null)
+            {
+                actionQueueRoutine = StartCoroutine(ProcessActionQueue());
+            }
+
+            message = $"{gameObject.name} enqueued {enqueuedCount} actions. Queued actions: {actionQueue.Count}.";
             return true;
         }
 
@@ -69,6 +76,10 @@ public class act_npc_controller : MonoBehaviour
 
         switch (action)
         {
+            case "stop":
+                StopCurrentActions();
+                message = $"{gameObject.name} stopped current actions.";
+                return true;
             case "fetch":
                 return TryFetch(FirstNonEmpty(command.@object, command.item, command.destination), out message);
             case "move":
@@ -117,9 +128,9 @@ public class act_npc_controller : MonoBehaviour
         return true;
     }
 
-    private IEnumerator ExecuteActionQueue(NpcAction[] actions)
+    private int EnqueueActions(NpcAction[] actions)
     {
-        isExecutingActionQueue = true;
+        int enqueuedCount = 0;
 
         foreach (NpcAction action in actions)
         {
@@ -128,14 +139,35 @@ public class act_npc_controller : MonoBehaviour
                 continue;
             }
 
+            actionQueue.Enqueue(action);
+            enqueuedCount++;
+        }
+
+        return enqueuedCount;
+    }
+
+    private IEnumerator ProcessActionQueue()
+    {
+        while (actionQueue.Count > 0)
+        {
+            NpcAction action = actionQueue.Dequeue();
             string normalizedCommand = NormalizeQueueCommand(action.command);
+
             switch (normalizedCommand)
             {
+                case "STOP":
+                    ClearMovement();
+                    actionQueue.Clear();
+                    actionQueueRoutine = null;
+                    Debug.Log("Action queue STOP completed.");
+                    yield break;
+
                 case "MOVE_TO":
                     if (!TryStartMoveToTarget(action.target_id, out string moveMessage))
                     {
                         Debug.LogWarning($"Action queue failed: {moveMessage}");
-                        isExecutingActionQueue = false;
+                        actionQueue.Clear();
+                        actionQueueRoutine = null;
                         yield break;
                     }
 
@@ -149,7 +181,8 @@ public class act_npc_controller : MonoBehaviour
                     if (!TryGetItem(action.target_id, out string getMessage))
                     {
                         Debug.LogWarning($"Action queue failed: {getMessage}");
-                        isExecutingActionQueue = false;
+                        actionQueue.Clear();
+                        actionQueueRoutine = null;
                         yield break;
                     }
 
@@ -158,13 +191,53 @@ public class act_npc_controller : MonoBehaviour
 
                 default:
                     Debug.LogWarning($"Action queue failed: unsupported command={action.command}");
-                    isExecutingActionQueue = false;
+                    actionQueue.Clear();
+                    actionQueueRoutine = null;
                     yield break;
             }
         }
 
-        isExecutingActionQueue = false;
+        actionQueueRoutine = null;
         Debug.Log("NPC action queue completed.");
+    }
+
+    private bool ContainsStopAction(NpcAction[] actions)
+    {
+        foreach (NpcAction action in actions)
+        {
+            if (action != null && NormalizeQueueCommand(action.command) == "STOP")
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private void StopCurrentActions()
+    {
+        actionQueue.Clear();
+
+        if (actionQueueRoutine != null)
+        {
+            StopCoroutine(actionQueueRoutine);
+            actionQueueRoutine = null;
+        }
+
+        ClearMovement();
+        Debug.Log("NPC current actions stopped.");
+    }
+
+    private void ClearMovement()
+    {
+        hasActiveDestination = false;
+
+        if (navAgent != null)
+        {
+            navAgent.ResetPath();
+            navAgent.isStopped = true;
+            navAgent.velocity = Vector3.zero;
+        }
     }
 
     private bool TryStartMoveToTarget(string targetId, out string message)
@@ -271,7 +344,7 @@ public class act_npc_controller : MonoBehaviour
             {
                 agent_id = gameObject.name,
                 position = transform.position,
-                state = hasActiveDestination ? "moving" : "idle"
+                state = actionQueueRoutine != null ? "busy" : "idle"
             }
         };
     }
@@ -400,6 +473,7 @@ public class act_npc_controller : MonoBehaviour
     private void SetDestination(in Vector3 position)
     {
         hasActiveDestination = true;
+        navAgent.isStopped = false;
         navAgent.SetDestination(position);    
     }
 
