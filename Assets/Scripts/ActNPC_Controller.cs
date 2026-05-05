@@ -6,9 +6,13 @@ using System.Collections.Generic;
 
 public class act_npc_controller : MonoBehaviour
 {
+    public event Action<NpcAction, string> ActionFailed;
+
     [SerializeField] private Rigidbody rb;
 
     [SerializeField] private Transform destination;
+    [SerializeField] private float pickupRadius = 1.5f;
+    [SerializeField] private LayerMask pickupLayers = ~0;
     private GameObject item;
     private NavMeshAgent navAgent;
     private bool hasActiveDestination;
@@ -44,8 +48,17 @@ public class act_npc_controller : MonoBehaviour
             return false;
         }
 
-        if (command.actions != null && command.actions.Length > 0)
+        if (command.actions != null)
         {
+            if (command.actions.Length == 0)
+            {
+                message = string.IsNullOrWhiteSpace(command.message)
+                    ? "No executable NPC actions were provided."
+                    : command.message;
+                Debug.Log($"NPC action plan was empty: actor={gameObject.name}, message={message}");
+                return true;
+            }
+
             if (ContainsStopAction(command.actions))
             {
                 StopCurrentActions();
@@ -80,8 +93,8 @@ public class act_npc_controller : MonoBehaviour
                 StopCurrentActions();
                 message = $"{gameObject.name} stopped current actions.";
                 return true;
-            case "fetch":
-                return TryFetch(FirstNonEmpty(command.@object, command.item, command.destination), out message);
+            case "get_item":
+                return TryGetItem(FirstNonEmpty(command.@object, command.item, command.destination), out message);
             case "move":
                 return TryMoveTo(FirstNonEmpty(command.@object, command.destination, command.item), out message);
             default:
@@ -110,29 +123,6 @@ public class act_npc_controller : MonoBehaviour
         Debug.Log($"NPC move requested: actor={gameObject.name}, destination={destination}");
 
         message = $"{gameObject.name} moving to {destination}.";
-        return true;
-    }
-
-    private bool TryFetch(string item, out string message)
-    {
-        if (string.IsNullOrWhiteSpace(item))
-        {
-            message = "Fetch item is required.";
-            return false;
-        }
-
-        SceneObject target = FindSceneObject(item, "item");
-        Item legacyItem = target == null ? FindItem(item) : null;
-        if (target == null && legacyItem == null)
-        {
-            message = $"Fetch item was not found: {item}";
-            return false;
-        }
-
-        string resolvedItem = target == null ? legacyItem.gameObject.name : target.ResolvedObjectId;
-        Debug.Log($"NPC fetch requested: actor={gameObject.name}, item={resolvedItem}");
-
-        message = $"{gameObject.name} fetching {resolvedItem}.";
         return true;
     }
 
@@ -174,6 +164,7 @@ public class act_npc_controller : MonoBehaviour
                     if (!TryStartMoveToTarget(action.target_id, out string moveMessage))
                     {
                         Debug.LogWarning($"Action queue failed: {moveMessage}");
+                        NotifyActionFailed(action, moveMessage);
                         actionQueue.Clear();
                         actionQueueRoutine = null;
                         yield break;
@@ -189,6 +180,7 @@ public class act_npc_controller : MonoBehaviour
                     if (!TryGetItem(action.target_id, out string getMessage))
                     {
                         Debug.LogWarning($"Action queue failed: {getMessage}");
+                        NotifyActionFailed(action, getMessage);
                         actionQueue.Clear();
                         actionQueueRoutine = null;
                         yield break;
@@ -198,7 +190,9 @@ public class act_npc_controller : MonoBehaviour
                     break;
 
                 default:
-                    Debug.LogWarning($"Action queue failed: unsupported command={action.command}");
+                    string unsupportedMessage = $"Unsupported queued command: {action.command}";
+                    Debug.LogWarning($"Action queue failed: {unsupportedMessage}");
+                    NotifyActionFailed(action, unsupportedMessage);
                     actionQueue.Clear();
                     actionQueueRoutine = null;
                     yield break;
@@ -207,6 +201,11 @@ public class act_npc_controller : MonoBehaviour
 
         actionQueueRoutine = null;
         Debug.Log("NPC action queue completed.");
+    }
+
+    private void NotifyActionFailed(NpcAction action, string message)
+    {
+        ActionFailed?.Invoke(action, message);
     }
 
     private bool ContainsStopAction(NpcAction[] actions)
@@ -277,16 +276,78 @@ public class act_npc_controller : MonoBehaviour
         }
 
         SceneObject target = FindSceneObject(targetId, "item");
-        Item targetItem = target == null ? FindItem(targetId) : target.GetComponent<Item>();
+        Item targetItem = target == null ? FindItem(targetId) : FindItemComponent(target);
         if (targetItem == null)
         {
             message = $"GET_ITEM target was not found: {targetId}";
             return false;
         }
 
+        if (!IsItemInPickupRange(targetItem))
+        {
+            message = $"GET_ITEM target is not within pickup range: {targetId}";
+            return false;
+        }
+
         targetItem.gameObject.SetActive(false);
         message = $"{gameObject.name} got item {targetId}.";
         return true;
+    }
+
+    private bool IsItemInPickupRange(Item targetItem)
+    {
+        if (targetItem == null)
+        {
+            return false;
+        }
+
+        Collider[] colliders = Physics.OverlapSphere(
+            transform.position,
+            pickupRadius,
+            pickupLayers,
+            QueryTriggerInteraction.Collide
+        );
+
+        Transform targetTransform = targetItem.transform;
+        foreach (Collider detectedCollider in colliders)
+        {
+            if (detectedCollider == null)
+            {
+                continue;
+            }
+
+            Transform detectedTransform = detectedCollider.transform;
+            if (detectedTransform == targetTransform
+                || detectedTransform.IsChildOf(targetTransform)
+                || targetTransform.IsChildOf(detectedTransform))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static Item FindItemComponent(SceneObject sceneObject)
+    {
+        if (sceneObject == null)
+        {
+            return null;
+        }
+
+        Item item = sceneObject.GetComponent<Item>();
+        if (item != null)
+        {
+            return item;
+        }
+
+        item = sceneObject.GetComponentInChildren<Item>();
+        if (item != null)
+        {
+            return item;
+        }
+
+        return sceneObject.GetComponentInParent<Item>();
     }
 
     public bool TryHandleClientFunction(string functionName, ClientFunctionArgs args, out ClientFunctionResult result)
@@ -446,6 +507,11 @@ public class act_npc_controller : MonoBehaviour
 
     private static ClientObjectInfo CreateObjectInfo(Item item, string query)
     {
+        return CreateObjectInfo(item, query, true);
+    }
+
+    private static ClientObjectInfo CreateObjectInfo(Item item, string query, bool reachable)
+    {
         return new ClientObjectInfo
         {
             object_id = item.gameObject.name,
@@ -453,12 +519,17 @@ public class act_npc_controller : MonoBehaviour
             type = "item",
             position = item.transform.position,
             status = item.gameObject.activeInHierarchy ? "available" : "disabled",
-            reachable = true,
+            reachable = reachable,
             confidence = string.Equals(item.itemName, query, StringComparison.OrdinalIgnoreCase) ? 1f : 0.75f
         };
     }
 
     private static ClientObjectInfo CreateObjectInfo(SceneObject sceneObject, string query)
+    {
+        return CreateObjectInfo(sceneObject, query, true);
+    }
+
+    private static ClientObjectInfo CreateObjectInfo(SceneObject sceneObject, string query, bool reachable)
     {
         return new ClientObjectInfo
         {
@@ -467,7 +538,7 @@ public class act_npc_controller : MonoBehaviour
             type = sceneObject.objectType.ToString().ToLowerInvariant(),
             position = sceneObject.transform.position,
             status = sceneObject.gameObject.activeInHierarchy ? "available" : "disabled",
-            reachable = true,
+            reachable = reachable,
             confidence = sceneObject.GetMatchConfidence(query)
         };
     }

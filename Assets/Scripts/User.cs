@@ -65,6 +65,11 @@ public class User : MonoBehaviour
         {
             commandInputField.onSubmit.AddListener(SubmitCommandFromInput);
         }
+
+        if (npcController != null)
+        {
+            npcController.ActionFailed += HandleNpcActionFailed;
+        }
     }
 
     private async void OnDisable()
@@ -72,6 +77,11 @@ public class User : MonoBehaviour
         if (commandInputField != null)
         {
             commandInputField.onSubmit.RemoveListener(SubmitCommandFromInput);
+        }
+
+        if (npcController != null)
+        {
+            npcController.ActionFailed -= HandleNpcActionFailed;
         }
 
         await CloseBackendConnection();
@@ -401,6 +411,19 @@ public class User : MonoBehaviour
         await SendText(json);
     }
 
+    private void HandleNpcActionFailed(act_npc_controller.NpcAction action, string message)
+    {
+        ActionResultMessage result = new ActionResultMessage
+        {
+            type = "action_result",
+            status = "failed",
+            message = message,
+            action = action
+        };
+
+        SendJson(JsonUtility.ToJson(result));
+    }
+
     private async Task SendText(string text)
     {
         if (webSocket == null || webSocket.State != WebSocketState.Open)
@@ -496,5 +519,14 @@ public class User : MonoBehaviour
         public string status;
         public string input;
         public act_npc_controller.NpcCommand command;
+    }
+
+    [Serializable]
+    private class ActionResultMessage
+    {
+        public string type;
+        public string status;
+        public string message;
+        public act_npc_controller.NpcAction action;
     }
 }
