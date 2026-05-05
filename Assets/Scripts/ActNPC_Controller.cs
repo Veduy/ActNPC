@@ -98,14 +98,14 @@ public class act_npc_controller : MonoBehaviour
             return false;
         }
 
-        Item foundItem = FindItem(destination);
-        if (foundItem == null)
+        SceneObject target = FindSceneObject(destination, "location");
+        if (target == null)
         {
             message = $"Move destination was not found: {destination}";
             return false;
         }
 
-        SetDestination(foundItem.transform.position);
+        SetDestination(target.transform.position);
         
         Debug.Log($"NPC move requested: actor={gameObject.name}, destination={destination}");
 
@@ -121,10 +121,18 @@ public class act_npc_controller : MonoBehaviour
             return false;
         }
 
-        // TODO: Connect this placeholder to the actual NPC inventory/action system.
-        Debug.Log($"NPC fetch requested: actor={gameObject.name}, item={item}");
+        SceneObject target = FindSceneObject(item, "item");
+        Item legacyItem = target == null ? FindItem(item) : null;
+        if (target == null && legacyItem == null)
+        {
+            message = $"Fetch item was not found: {item}";
+            return false;
+        }
 
-        message = $"{gameObject.name} fetching {item}.";
+        string resolvedItem = target == null ? legacyItem.gameObject.name : target.ResolvedObjectId;
+        Debug.Log($"NPC fetch requested: actor={gameObject.name}, item={resolvedItem}");
+
+        message = $"{gameObject.name} fetching {resolvedItem}.";
         return true;
     }
 
@@ -248,7 +256,7 @@ public class act_npc_controller : MonoBehaviour
             return false;
         }
 
-        Item target = FindItem(targetId);
+        SceneObject target = FindSceneObject(targetId, "location");
         if (target == null)
         {
             message = $"MOVE_TO target was not found: {targetId}";
@@ -268,14 +276,15 @@ public class act_npc_controller : MonoBehaviour
             return false;
         }
 
-        Item target = FindItem(targetId);
-        if (target == null)
+        SceneObject target = FindSceneObject(targetId, "item");
+        Item targetItem = target == null ? FindItem(targetId) : target.GetComponent<Item>();
+        if (targetItem == null)
         {
             message = $"GET_ITEM target was not found: {targetId}";
             return false;
         }
 
-        target.gameObject.SetActive(false);
+        targetItem.gameObject.SetActive(false);
         message = $"{gameObject.name} got item {targetId}.";
         return true;
     }
@@ -309,21 +318,18 @@ public class act_npc_controller : MonoBehaviour
         }
 
         int maxResults = args != null && args.max_results > 0 ? args.max_results : 5;
+        string objectType = args == null ? null : args.object_type;
         List<ClientObjectInfo> matches = new List<ClientObjectInfo>();
-        Item[] items = FindObjectsByType<Item>(FindObjectsSortMode.None);
+        List<SceneObject> sceneObjects = SceneObjectRegistry.Search(query, objectType, maxResults);
 
-        foreach (Item candidate in items)
+        foreach (SceneObject candidate in sceneObjects)
         {
-            if (!ItemMatches(candidate, query))
-            {
-                continue;
-            }
-
             matches.Add(CreateObjectInfo(candidate, query));
-            if (matches.Count >= maxResults)
-            {
-                break;
-            }
+        }
+
+        if (matches.Count == 0)
+        {
+            AddLegacyItemMatches(query, maxResults, matches);
         }
 
         ClientFunctionResult result = new ClientFunctionResult
@@ -368,6 +374,16 @@ public class act_npc_controller : MonoBehaviour
 
     private Item FindItem(string name)
     {
+        SceneObject sceneObject = FindSceneObject(name, "item");
+        if (sceneObject != null)
+        {
+            Item sceneItem = sceneObject.GetComponent<Item>();
+            if (sceneItem != null)
+            {
+                return sceneItem;
+            }
+        }
+
         Item[] items = FindObjectsByType<Item>(FindObjectsSortMode.None);
         
         foreach(Item item in items)
@@ -379,6 +395,36 @@ public class act_npc_controller : MonoBehaviour
         }
 
         return null;
+    }
+
+    private SceneObject FindSceneObject(string queryOrId, string objectType)
+    {
+        if (SceneObjectRegistry.TryGet(queryOrId, out SceneObject byId)
+            && byId.MatchesObjectType(objectType))
+        {
+            return byId;
+        }
+
+        return SceneObjectRegistry.FindFirst(queryOrId, objectType);
+    }
+
+    private static void AddLegacyItemMatches(string query, int maxResults, List<ClientObjectInfo> matches)
+    {
+        Item[] items = FindObjectsByType<Item>(FindObjectsSortMode.None);
+
+        foreach (Item candidate in items)
+        {
+            if (!ItemMatches(candidate, query))
+            {
+                continue;
+            }
+
+            matches.Add(CreateObjectInfo(candidate, query));
+            if (matches.Count >= maxResults)
+            {
+                break;
+            }
+        }
     }
 
     private static bool ItemMatches(Item item, string query)
@@ -409,6 +455,20 @@ public class act_npc_controller : MonoBehaviour
             status = item.gameObject.activeInHierarchy ? "available" : "disabled",
             reachable = true,
             confidence = string.Equals(item.itemName, query, StringComparison.OrdinalIgnoreCase) ? 1f : 0.75f
+        };
+    }
+
+    private static ClientObjectInfo CreateObjectInfo(SceneObject sceneObject, string query)
+    {
+        return new ClientObjectInfo
+        {
+            object_id = sceneObject.ResolvedObjectId,
+            name = sceneObject.ResolvedDisplayName,
+            type = sceneObject.objectType.ToString().ToLowerInvariant(),
+            position = sceneObject.transform.position,
+            status = sceneObject.gameObject.activeInHierarchy ? "available" : "disabled",
+            reachable = true,
+            confidence = sceneObject.GetMatchConfidence(query)
         };
     }
 

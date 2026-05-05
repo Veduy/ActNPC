@@ -447,6 +447,7 @@ GameObject:
   - component: {fileID: 529602791}
   - component: {fileID: 529602790}
   - component: {fileID: 529602789}
+  - component: {fileID: 529602794}
   - component: {fileID: 529602793}
   m_Layer: 0
   m_Name: Apple
@@ -561,6 +562,26 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::Item
   itemName: apple
+--- !u!114 &529602794
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 529602788}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: e5a42f4d79bb4de8a01b2e9239848f7d, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::SceneObject
+  objectId: apple_01
+  displayName: Apple
+  aliases:
+  - apple
+  - red apple
+  - "\uC0AC\uACFC"
+  - "\uBE68\uAC04 \uC0AC\uACFC"
+  objectType: 0
 --- !u!1 &824411953
 GameObject:
   m_ObjectHideFlags: 0
@@ -1268,6 +1289,7 @@ GameObject:
   - component: {fileID: 1413802806}
   - component: {fileID: 1413802805}
   - component: {fileID: 1413802804}
+  - component: {fileID: 1413802809}
   - component: {fileID: 1413802808}
   m_Layer: 0
   m_Name: Box
@@ -1382,6 +1404,25 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::Item
   itemName: box
+--- !u!114 &1413802809
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1413802803}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: e5a42f4d79bb4de8a01b2e9239848f7d, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::SceneObject
+  objectId: box_01
+  displayName: Box
+  aliases:
+  - box
+  - crate
+  - "\uC0C1\uC790"
+  objectType: 0
 --- !u!1 &1431555835
 GameObject:
   m_ObjectHideFlags: 0
