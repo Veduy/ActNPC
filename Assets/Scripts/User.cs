@@ -21,6 +21,7 @@ public class User : MonoBehaviour
     [SerializeField] private bool connectOnStart = true;
     [SerializeField] private TMP_InputField commandInputField;
     [SerializeField] private act_npc_controller npcController;
+    [SerializeField] private NPCSpeechBubble npcSpeechBubble;
 
     private readonly ConcurrentQueue<Action> mainThreadActions = new ConcurrentQueue<Action>();
     private ClientWebSocket webSocket;
@@ -43,6 +44,11 @@ public class User : MonoBehaviour
         {
             commandInputField = FindFirstObjectByType<TMP_InputField>();
         }
+
+        if (npcSpeechBubble == null)
+        {
+            npcSpeechBubble = FindFirstObjectByType<NPCSpeechBubble>();
+        }
     }
 
     private void Start()
@@ -59,6 +65,11 @@ public class User : MonoBehaviour
         {
             commandInputField.onSubmit.AddListener(SubmitCommandFromInput);
         }
+
+        if (npcController != null)
+        {
+            npcController.ActionFailed += HandleNpcActionFailed;
+        }
     }
 
     private async void OnDisable()
@@ -66,6 +77,11 @@ public class User : MonoBehaviour
         if (commandInputField != null)
         {
             commandInputField.onSubmit.RemoveListener(SubmitCommandFromInput);
+        }
+
+        if (npcController != null)
+        {
+            npcController.ActionFailed -= HandleNpcActionFailed;
         }
 
         await CloseBackendConnection();
@@ -369,6 +385,10 @@ public class User : MonoBehaviour
         if (!string.IsNullOrWhiteSpace(response.command.message))
         {
             Debug.Log($"LLM response: {response.command.message}");
+            if (npcSpeechBubble != null)
+            {
+                npcSpeechBubble.Say(response.command.message);
+            }
         }
 
         if (npcController == null)
@@ -389,6 +409,19 @@ public class User : MonoBehaviour
     private async void SendJson(string json)
     {
         await SendText(json);
+    }
+
+    private void HandleNpcActionFailed(act_npc_controller.NpcAction action, string message)
+    {
+        ActionResultMessage result = new ActionResultMessage
+        {
+            type = "action_result",
+            status = "failed",
+            message = message,
+            action = action
+        };
+
+        SendJson(JsonUtility.ToJson(result));
     }
 
     private async Task SendText(string text)
@@ -486,5 +519,14 @@ public class User : MonoBehaviour
         public string status;
         public string input;
         public act_npc_controller.NpcCommand command;
+    }
+
+    [Serializable]
+    private class ActionResultMessage
+    {
+        public string type;
+        public string status;
+        public string message;
+        public act_npc_controller.NpcAction action;
     }
 }
