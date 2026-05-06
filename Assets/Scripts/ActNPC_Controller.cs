@@ -13,7 +13,8 @@ public class act_npc_controller : MonoBehaviour
     [SerializeField] private Transform destination;
     [SerializeField] private float pickupRadius = 1.5f;
     [SerializeField] private LayerMask pickupLayers = ~0;
-    private GameObject item;
+    [SerializeField] private NPCInventory inventory;
+
     private NavMeshAgent navAgent;
     private bool hasActiveDestination;
     private readonly Queue<NpcAction> actionQueue = new Queue<NpcAction>();
@@ -23,6 +24,11 @@ public class act_npc_controller : MonoBehaviour
     {
         rb = GetComponent<Rigidbody>();
         navAgent = GetComponent<NavMeshAgent>();
+        inventory = GetComponent<NPCInventory>();
+        if (inventory == null)
+        {
+            inventory = gameObject.AddComponent<NPCInventory>();
+        }
     }
     
     private void Start()
@@ -144,6 +150,38 @@ public class act_npc_controller : MonoBehaviour
         return enqueuedCount;
     }
 
+    private void PrependActions(params NpcAction[] actions)
+    {
+        Queue<NpcAction> rebuiltQueue = new Queue<NpcAction>();
+
+        foreach (NpcAction action in actions)
+        {
+            if (action != null)
+            {
+                rebuiltQueue.Enqueue(action);
+            }
+        }
+
+        while (actionQueue.Count > 0)
+        {
+            rebuiltQueue.Enqueue(actionQueue.Dequeue());
+        }
+
+        while (rebuiltQueue.Count > 0)
+        {
+            actionQueue.Enqueue(rebuiltQueue.Dequeue());
+        }
+    }
+
+    private static bool ShouldRecoverGetItemByMoving(NpcAction action, string message)
+    {
+        return action != null
+            && action.recovery_attempts <= 0
+            && !string.IsNullOrWhiteSpace(action.target_id)
+            && !string.IsNullOrWhiteSpace(message)
+            && message.IndexOf("not within pickup range", StringComparison.OrdinalIgnoreCase) >= 0;
+    }
+
     private IEnumerator ProcessActionQueue()
     {
         while (actionQueue.Count > 0)
@@ -179,6 +217,22 @@ public class act_npc_controller : MonoBehaviour
                 case "GET_ITEM":
                     if (!TryGetItem(action.target_id, out string getMessage))
                     {
+                        if (ShouldRecoverGetItemByMoving(action, getMessage))
+                        {
+                            action.recovery_attempts++;
+                            PrependActions(
+                                new NpcAction
+                                {
+                                    action_id = $"{action.action_id}_recover_move",
+                                    command = "MOVE_TO",
+                                    target_id = action.target_id
+                                },
+                                action
+                            );
+                            Debug.Log($"Action queue recovery inserted MOVE_TO before GET_ITEM: target_id={action.target_id}");
+                            break;
+                        }
+
                         Debug.LogWarning($"Action queue failed: {getMessage}");
                         NotifyActionFailed(action, getMessage);
                         actionQueue.Clear();
@@ -289,8 +343,16 @@ public class act_npc_controller : MonoBehaviour
             return false;
         }
 
+        NPCInventory.InventoryItem inventoryItem = inventory.AddItem(targetItem, targetId);
+        if (inventoryItem == null)
+        {
+            message = $"GET_ITEM target could not be added to inventory: {targetId}";
+            return false;
+        }
+
         targetItem.gameObject.SetActive(false);
-        message = $"{gameObject.name} got item {targetId}.";
+        Destroy(targetItem.gameObject);
+        message = $"{gameObject.name} got item {inventoryItem.itemName}. Item count: {inventoryItem.count}.";
         return true;
     }
 
@@ -364,6 +426,9 @@ public class act_npc_controller : MonoBehaviour
             case "get_agent_state":
                 result = AgentStateResult();
                 return true;
+            case "get_inventory":
+                result = InventoryResult();
+                return true;
             default:
                 result = ErrorResult("FUNCTION_NOT_ALLOWED", $"Unsupported client function: {functionName}");
                 return false;
@@ -381,7 +446,7 @@ public class act_npc_controller : MonoBehaviour
         int maxResults = args != null && args.max_results > 0 ? args.max_results : 5;
         string objectType = args == null ? null : args.object_type;
         List<ClientObjectInfo> matches = new List<ClientObjectInfo>();
-        List<SceneObject> sceneObjects = SceneObjectRegistry.Search(query, objectType, maxResults);
+        List<SceneObject> sceneObjects = SceneObjectRegistry.SearchClosest(query, objectType, maxResults, transform.position);
 
         foreach (SceneObject candidate in sceneObjects)
         {
@@ -413,6 +478,15 @@ public class act_npc_controller : MonoBehaviour
                 position = transform.position,
                 state = actionQueueRoutine != null ? "busy" : "idle"
             }
+        };
+    }
+
+    private ClientFunctionResult InventoryResult()
+    {
+        return new ClientFunctionResult
+        {
+            ok = true,
+            inventory = inventory == null ? new NPCInventory.InventoryItem[0] : inventory.Snapshot()
         };
     }
 
@@ -460,13 +534,7 @@ public class act_npc_controller : MonoBehaviour
 
     private SceneObject FindSceneObject(string queryOrId, string objectType)
     {
-        if (SceneObjectRegistry.TryGet(queryOrId, out SceneObject byId)
-            && byId.MatchesObjectType(objectType))
-        {
-            return byId;
-        }
-
-        return SceneObjectRegistry.FindFirst(queryOrId, objectType);
+        return SceneObjectRegistry.FindClosest(queryOrId, objectType, transform.position);
     }
 
     private static void AddLegacyItemMatches(string query, int maxResults, List<ClientObjectInfo> matches)
@@ -501,6 +569,7 @@ public class act_npc_controller : MonoBehaviour
 
         return string.Equals(itemName, normalizedQuery, StringComparison.OrdinalIgnoreCase)
             || string.Equals(objectName, normalizedQuery, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(item.itemId.ToString(), normalizedQuery, StringComparison.OrdinalIgnoreCase)
             || itemName.IndexOf(normalizedQuery, StringComparison.OrdinalIgnoreCase) >= 0
             || objectName.IndexOf(normalizedQuery, StringComparison.OrdinalIgnoreCase) >= 0;
     }
@@ -514,7 +583,7 @@ public class act_npc_controller : MonoBehaviour
     {
         return new ClientObjectInfo
         {
-            object_id = item.gameObject.name,
+            object_id = item.itemId.ToString(),
             name = item.itemName,
             type = "item",
             position = item.transform.position,
@@ -661,6 +730,7 @@ public class act_npc_controller : MonoBehaviour
         public string action_id;
         public string command;
         public string target_id;
+        public int recovery_attempts;
     }
 
     [Serializable]
@@ -678,6 +748,7 @@ public class act_npc_controller : MonoBehaviour
         public bool ok;
         public ClientObjectInfo[] objects;
         public AgentState agent;
+        public NPCInventory.InventoryItem[] inventory;
         public ClientFunctionError error;
     }
 

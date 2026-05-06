@@ -45,9 +45,8 @@ public static class SceneObjectRegistry
             return matches;
         }
 
-        int resultLimit = maxResults > 0 ? maxResults : 5;
+        int resultLimit = maxResults > 0 ? maxResults : int.MaxValue;
         SceneObject[] objects = FindSceneObjects();
-        HashSet<string> seenObjectIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         foreach (SceneObject candidate in objects)
         {
@@ -55,13 +54,6 @@ public static class SceneObjectRegistry
                 || !candidate.MatchesObjectType(objectType)
                 || !candidate.MatchesQuery(query))
             {
-                continue;
-            }
-
-            string objectId = candidate.ResolvedObjectId;
-            if (!seenObjectIds.Add(objectId))
-            {
-                Debug.LogWarning($"Duplicate SceneObject objectId detected: {objectId}");
                 continue;
             }
 
@@ -75,9 +67,31 @@ public static class SceneObjectRegistry
         return matches;
     }
 
+    public static List<SceneObject> SearchClosest(string query, string objectType, int maxResults, Vector3 origin)
+    {
+        List<SceneObject> matches = Search(query, objectType, 0);
+        matches.Sort((left, right) =>
+            Vector3.SqrMagnitude(left.transform.position - origin)
+                .CompareTo(Vector3.SqrMagnitude(right.transform.position - origin)));
+
+        int resultLimit = maxResults > 0 ? maxResults : 5;
+        if (matches.Count > resultLimit)
+        {
+            matches.RemoveRange(resultLimit, matches.Count - resultLimit);
+        }
+
+        return matches;
+    }
+
     public static SceneObject FindFirst(string query, string objectType)
     {
         List<SceneObject> matches = Search(query, objectType, 1);
+        return matches.Count > 0 ? matches[0] : null;
+    }
+
+    public static SceneObject FindClosest(string query, string objectType, Vector3 origin)
+    {
+        List<SceneObject> matches = SearchClosest(query, objectType, 1, origin);
         return matches.Count > 0 ? matches[0] : null;
     }
 
