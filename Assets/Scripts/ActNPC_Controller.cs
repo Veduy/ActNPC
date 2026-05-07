@@ -12,6 +12,7 @@ public class act_npc_controller : MonoBehaviour
 
     [SerializeField] private Transform destination;
     [SerializeField] private float pickupRadius = 1.5f;
+    [SerializeField] private float putItemDistance = 1.25f;
     [SerializeField] private LayerMask pickupLayers = ~0;
     [SerializeField] private NPCInventory inventory;
 
@@ -40,8 +41,7 @@ public class act_npc_controller : MonoBehaviour
     {
         if(actionQueueRoutine == null && HasArrived())
         {
-            Debug.Log("Arrived destination!");
-            hasActiveDestination = false;
+            ClearMovement();
         }
     }
 
@@ -61,7 +61,6 @@ public class act_npc_controller : MonoBehaviour
                 message = string.IsNullOrWhiteSpace(command.message)
                     ? "No executable NPC actions were provided."
                     : command.message;
-                Debug.Log($"NPC action plan was empty: actor={gameObject.name}, message={message}");
                 return true;
             }
 
@@ -89,7 +88,6 @@ public class act_npc_controller : MonoBehaviour
             message = string.IsNullOrWhiteSpace(command.message)
                 ? "No NPC action was requested."
                 : command.message;
-            Debug.Log($"NPC response: actor={gameObject.name}, message={message}");
             return true;
         }
 
@@ -100,9 +98,11 @@ public class act_npc_controller : MonoBehaviour
                 message = $"{gameObject.name} stopped current actions.";
                 return true;
             case "get_item":
-                return TryGetItem(FirstNonEmpty(command.@object, command.item, command.destination), out message);
+                return TryGetItem(FirstNonEmpty(command.object_id, command.@object, command.object_name, command.item, command.destination), out message);
+            case "put_item":
+                return TryPutItem(FirstNonEmpty(command.object_id, command.@object, command.object_name, command.item, command.destination), out message);
             case "move":
-                return TryMoveTo(FirstNonEmpty(command.@object, command.destination, command.item), out message);
+                return TryMoveTo(FirstNonEmpty(command.object_id, command.@object, command.object_name, command.destination, command.item), out message);
             default:
                 message = $"Unsupported NPC action: {command.action}";
                 return false;
@@ -125,8 +125,6 @@ public class act_npc_controller : MonoBehaviour
         }
 
         SetDestination(target.transform.position);
-        
-        Debug.Log($"NPC move requested: actor={gameObject.name}, destination={destination}");
 
         message = $"{gameObject.name} moving to {destination}.";
         return true;
@@ -195,7 +193,6 @@ public class act_npc_controller : MonoBehaviour
                     ClearMovement();
                     actionQueue.Clear();
                     actionQueueRoutine = null;
-                    Debug.Log("Action queue STOP completed.");
                     yield break;
 
                 case "MOVE_TO":
@@ -208,10 +205,8 @@ public class act_npc_controller : MonoBehaviour
                         yield break;
                     }
 
-                    Debug.Log($"Action queue: {moveMessage}");
                     yield return new WaitUntil(HasArrived);
-                    hasActiveDestination = false;
-                    Debug.Log($"Action queue MOVE_TO completed: target_id={action.target_id}");
+                    ClearMovement();
                     break;
 
                 case "GET_ITEM":
@@ -229,7 +224,6 @@ public class act_npc_controller : MonoBehaviour
                                 },
                                 action
                             );
-                            Debug.Log($"Action queue recovery inserted MOVE_TO before GET_ITEM: target_id={action.target_id}");
                             break;
                         }
 
@@ -240,7 +234,18 @@ public class act_npc_controller : MonoBehaviour
                         yield break;
                     }
 
-                    Debug.Log($"Action queue: {getMessage}");
+                    break;
+
+                case "PUT_ITEM":
+                    if (!TryPutItem(action.target_id, out string putMessage))
+                    {
+                        Debug.LogWarning($"Action queue failed: {putMessage}");
+                        NotifyActionFailed(action, putMessage);
+                        actionQueue.Clear();
+                        actionQueueRoutine = null;
+                        yield break;
+                    }
+
                     break;
 
                 default:
@@ -254,7 +259,6 @@ public class act_npc_controller : MonoBehaviour
         }
 
         actionQueueRoutine = null;
-        Debug.Log("NPC action queue completed.");
     }
 
     private void NotifyActionFailed(NpcAction action, string message)
@@ -286,7 +290,6 @@ public class act_npc_controller : MonoBehaviour
         }
 
         ClearMovement();
-        Debug.Log("NPC current actions stopped.");
     }
 
     private void ClearMovement()
@@ -351,9 +354,40 @@ public class act_npc_controller : MonoBehaviour
         }
 
         targetItem.gameObject.SetActive(false);
-        Destroy(targetItem.gameObject);
         message = $"{gameObject.name} got item {inventoryItem.itemName}. Item count: {inventoryItem.count}.";
         return true;
+    }
+
+    private bool TryPutItem(string targetId, out string message)
+    {
+        if (string.IsNullOrWhiteSpace(targetId))
+        {
+            message = "PUT_ITEM target_id is required.";
+            return false;
+        }
+
+        if (inventory == null || !inventory.TryTakeItem(targetId, out Item item))
+        {
+            message = $"PUT_ITEM inventory target was not found: {targetId}";
+            return false;
+        }
+
+        PlaceInventoryItem(item);
+        message = $"{gameObject.name} put down item {item.itemName}.";
+        return true;
+    }
+
+    private void PlaceInventoryItem(Item item)
+    {
+        if (item == null)
+        {
+            return;
+        }
+
+        Vector3 forward = transform.forward.sqrMagnitude > 0.001f ? transform.forward.normalized : Vector3.forward;
+        Vector3 spawnPosition = transform.position + forward * putItemDistance;
+        item.transform.position = spawnPosition;
+        item.gameObject.SetActive(true);
     }
 
     private bool IsItemInPickupRange(Item targetItem)
@@ -720,6 +754,9 @@ public class act_npc_controller : MonoBehaviour
         public string destination;
         public string item;
         public string @object;
+        public string object_name;
+        public string object_id;
+        public Vector3 position;
         public string message;
         public NpcAction[] actions;
     }

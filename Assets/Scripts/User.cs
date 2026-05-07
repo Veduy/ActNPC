@@ -236,7 +236,6 @@ public class User : MonoBehaviour
         }
 
         await SendText(commandMessage);
-        Debug.Log($"Sent command message: {commandMessage}");
     }
 
     private async Task ReceiveBackendMessages(CancellationToken cancellationToken)
@@ -384,12 +383,13 @@ public class User : MonoBehaviour
 
         if (!string.IsNullOrWhiteSpace(response.command.message))
         {
-            Debug.Log($"LLM response: {response.command.message}");
             if (npcSpeechBubble != null)
             {
                 npcSpeechBubble.Say(response.command.message);
             }
         }
+
+        Debug.Log($"AI response: {FirstNonEmpty(response.command.message, "(empty)")}\nCommand actions: {FormatCommandActions(response.command)}");
 
         if (npcController == null)
         {
@@ -402,8 +402,63 @@ public class User : MonoBehaviour
             Debug.LogWarning($"NPC command was not executed: {actMessage}");
             return;
         }
+    }
 
-        Debug.Log($"NPC command handled: {actMessage}");
+    private static string FormatCommandActions(act_npc_controller.NpcCommand command)
+    {
+        if (command == null)
+        {
+            return "(command is null)";
+        }
+
+        string formattedActions = FormatActions(command.actions);
+        if (!string.IsNullOrWhiteSpace(formattedActions))
+        {
+            return formattedActions;
+        }
+
+        return $"legacy action={FirstNonEmpty(command.action, "-")}, object_id={FirstNonEmpty(command.object_id, command.@object, "-")}, object_name={FirstNonEmpty(command.object_name, command.item, command.destination, "-")}";
+    }
+
+    private static string FormatActions(act_npc_controller.NpcAction[] actions)
+    {
+        if (actions == null)
+        {
+            return null;
+        }
+
+        if (actions.Length == 0)
+        {
+            return null;
+        }
+
+        string[] lines = new string[actions.Length];
+        for (int index = 0; index < actions.Length; index++)
+        {
+            act_npc_controller.NpcAction action = actions[index];
+            if (action == null)
+            {
+                lines[index] = $"{index + 1}. null";
+                continue;
+            }
+
+            lines[index] = $"{index + 1}:{FirstNonEmpty(action.command, "-")}({FirstNonEmpty(action.target_id, "-")})";
+        }
+
+        return $"count={actions.Length}; {string.Join(", ", lines)}";
+    }
+
+    private static string FirstNonEmpty(params string[] values)
+    {
+        foreach (string value in values)
+        {
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                return value;
+            }
+        }
+
+        return null;
     }
 
     private async void SendJson(string json)

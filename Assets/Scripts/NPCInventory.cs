@@ -4,9 +4,7 @@ using UnityEngine;
 
 public class NPCInventory : MonoBehaviour
 {
-    [SerializeField] private List<InventoryItem> items = new List<InventoryItem>();
-
-    public IReadOnlyList<InventoryItem> Items => items;
+    private readonly List<InventoryStack> itemStacks = new List<InventoryStack>();
 
     public InventoryItem AddItem(Item item, string fallbackObjectId)
     {
@@ -21,27 +19,26 @@ public class NPCInventory : MonoBehaviour
             return null;
         }
 
-        InventoryItem existingItem = FindItemById(itemId);
-        if (existingItem != null)
+        string itemName = string.IsNullOrWhiteSpace(item.itemName) ? item.gameObject.name : item.itemName.Trim();
+        InventoryStack stack = FindStackById(itemId);
+        if (stack == null)
         {
-            existingItem.count++;
-            return existingItem;
+            stack = new InventoryStack
+            {
+                itemId = itemId,
+                itemName = itemName
+            };
+            itemStacks.Add(stack);
         }
 
-        InventoryItem inventoryItem = new InventoryItem
-        {
-            itemId = itemId,
-            itemName = string.IsNullOrWhiteSpace(item.itemName) ? item.gameObject.name : item.itemName.Trim(),
-            count = 1
-        };
-
-        items.Add(inventoryItem);
-        return inventoryItem;
+        stack.items.Add(item);
+        return stack.ToSnapshot();
     }
 
     public bool ContainsItem(int itemId)
     {
-        return FindItemById(itemId) != null;
+        InventoryStack stack = FindStackById(itemId);
+        return stack != null && stack.Count > 0;
     }
 
     public bool ContainsObject(string objectId)
@@ -49,23 +46,80 @@ public class NPCInventory : MonoBehaviour
         return TryParseItemId(objectId, out int itemId) && ContainsItem(itemId);
     }
 
-    public InventoryItem[] Snapshot()
+    public bool TryTakeItem(string target, out Item item)
     {
-        return items.ToArray();
+        item = null;
+
+        InventoryStack stack = FindStack(target);
+        if (stack == null || stack.Count <= 0)
+        {
+            return false;
+        }
+
+        int lastIndex = stack.items.Count - 1;
+        item = stack.items[lastIndex];
+        stack.items.RemoveAt(lastIndex);
+
+        if (stack.Count <= 0)
+        {
+            itemStacks.Remove(stack);
+        }
+
+        return item != null;
     }
 
-    private InventoryItem FindItemById(int itemId)
+    public InventoryItem[] Snapshot()
+    {
+        List<InventoryItem> snapshots = new List<InventoryItem>();
+        foreach (InventoryStack stack in itemStacks)
+        {
+            if (stack != null && stack.Count > 0)
+            {
+                snapshots.Add(stack.ToSnapshot());
+            }
+        }
+
+        return snapshots.ToArray();
+    }
+
+    private InventoryStack FindStack(string target)
+    {
+        if (string.IsNullOrWhiteSpace(target))
+        {
+            return null;
+        }
+
+        if (TryParseItemId(target, out int itemId))
+        {
+            return FindStackById(itemId);
+        }
+
+        string normalizedTarget = target.Trim();
+        foreach (InventoryStack stack in itemStacks)
+        {
+            if (stack != null
+                && !string.IsNullOrWhiteSpace(stack.itemName)
+                && string.Equals(stack.itemName.Trim(), normalizedTarget, StringComparison.OrdinalIgnoreCase))
+            {
+                return stack;
+            }
+        }
+
+        return null;
+    }
+
+    private InventoryStack FindStackById(int itemId)
     {
         if (itemId <= 0)
         {
             return null;
         }
 
-        foreach (InventoryItem item in items)
+        foreach (InventoryStack stack in itemStacks)
         {
-            if (item != null && item.itemId == itemId)
+            if (stack != null && stack.itemId == itemId)
             {
-                return item;
+                return stack;
             }
         }
 
@@ -97,6 +151,25 @@ public class NPCInventory : MonoBehaviour
         }
 
         return int.TryParse(value.Trim(), out itemId) && itemId > 0;
+    }
+
+    private class InventoryStack
+    {
+        public int itemId;
+        public string itemName;
+        public readonly List<Item> items = new List<Item>();
+
+        public int Count => items.Count;
+
+        public InventoryItem ToSnapshot()
+        {
+            return new InventoryItem
+            {
+                itemId = itemId,
+                itemName = itemName,
+                count = Count
+            };
+        }
     }
 
     [Serializable]
