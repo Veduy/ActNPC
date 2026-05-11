@@ -144,7 +144,8 @@ public class BackendHealthClient : MonoBehaviour
         {
             if (command != null)
             {
-                return $"action={command.action}, destination={command.destination}, item={command.item}, message={command.message}";
+                int actionCount = command.actions == null ? 0 : command.actions.Length;
+                return $"actions={actionCount}, message={command.message}";
             }
 
             return response ?? string.Empty;
@@ -154,9 +155,7 @@ public class BackendHealthClient : MonoBehaviour
     [Serializable]
     private class OpenAiCommandResponse
     {
-        public string action;
-        public string destination;
-        public string item;
+        public act_npc_controller.NpcAction[] actions;
         public string message;
     }
 }

@@ -65,11 +65,6 @@ public class User : MonoBehaviour
         {
             commandInputField.onSubmit.AddListener(SubmitCommandFromInput);
         }
-
-        if (npcController != null)
-        {
-            npcController.ActionFailed += HandleNpcActionFailed;
-        }
     }
 
     private async void OnDisable()
@@ -77,11 +72,6 @@ public class User : MonoBehaviour
         if (commandInputField != null)
         {
             commandInputField.onSubmit.RemoveListener(SubmitCommandFromInput);
-        }
-
-        if (npcController != null)
-        {
-            npcController.ActionFailed -= HandleNpcActionFailed;
         }
 
         await CloseBackendConnection();
@@ -333,18 +323,16 @@ public class User : MonoBehaviour
         if (npcController == null)
         {
             result.result.ok = false;
-            result.result.error = CreateFunctionError("NPC_CONTROLLER_NOT_ASSIGNED", "NPC controller is not assigned.");
+            result.result.error = new act_npc_controller.ClientFunctionError
+            {
+                code = "NPC_CONTROLLER_NOT_ASSIGNED",
+                message = "NPC controller is not assigned."
+            };
             SendJson(JsonUtility.ToJson(result));
             return;
         }
 
-        if (!npcController.TryHandleClientFunction(call.function, call.args, out act_npc_controller.ClientFunctionResult functionResult))
-        {
-            result.result = functionResult;
-            SendJson(JsonUtility.ToJson(result));
-            return;
-        }
-
+        npcController.TryHandleClientFunction(call.function, call.args, out act_npc_controller.ClientFunctionResult functionResult);
         result.result = functionResult;
         SendJson(JsonUtility.ToJson(result));
     }
@@ -417,7 +405,7 @@ public class User : MonoBehaviour
             return formattedActions;
         }
 
-        return $"legacy action={FirstNonEmpty(command.action, "-")}, object_id={FirstNonEmpty(command.object_id, command.@object, "-")}, object_name={FirstNonEmpty(command.object_name, command.item, command.destination, "-")}";
+        return "actions empty";
     }
 
     private static string FormatActions(act_npc_controller.NpcAction[] actions)
@@ -442,7 +430,7 @@ public class User : MonoBehaviour
                 continue;
             }
 
-            lines[index] = $"{index + 1}:{FirstNonEmpty(action.command, "-")}({FirstNonEmpty(action.target_id, "-")})";
+            lines[index] = $"{index + 1}:{FirstNonEmpty(action.command, "-")}({FirstNonEmpty(action.object_id, action.object_name, "-")})";
         }
 
         return $"count={actions.Length}; {string.Join(", ", lines)}";
@@ -464,19 +452,6 @@ public class User : MonoBehaviour
     private async void SendJson(string json)
     {
         await SendText(json);
-    }
-
-    private void HandleNpcActionFailed(act_npc_controller.NpcAction action, string message)
-    {
-        ActionResultMessage result = new ActionResultMessage
-        {
-            type = "action_result",
-            status = "failed",
-            message = message,
-            action = action
-        };
-
-        SendJson(JsonUtility.ToJson(result));
     }
 
     private async Task SendText(string text)
@@ -530,15 +505,6 @@ public class User : MonoBehaviour
         }
     }
 
-    private static act_npc_controller.ClientFunctionError CreateFunctionError(string code, string message)
-    {
-        return new act_npc_controller.ClientFunctionError
-        {
-            code = code,
-            message = message
-        };
-    }
-
     private static float NormalizePitch(float angle)
     {
         return angle > 180f ? angle - 360f : angle;
@@ -574,14 +540,5 @@ public class User : MonoBehaviour
         public string status;
         public string input;
         public act_npc_controller.NpcCommand command;
-    }
-
-    [Serializable]
-    private class ActionResultMessage
-    {
-        public string type;
-        public string status;
-        public string message;
-        public act_npc_controller.NpcAction action;
     }
 }

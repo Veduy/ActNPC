@@ -1,16 +1,12 @@
 using UnityEngine;
 using UnityEngine.AI;
-using System;
 using System.Collections;
 using System.Collections.Generic;
 
 public class act_npc_controller : MonoBehaviour
 {
-    public event Action<NpcAction, string> ActionFailed;
-
     [SerializeField] private Rigidbody rb;
 
-    [SerializeField] private Transform destination;
     [SerializeField] private float pickupRadius = 1.5f;
     [SerializeField] private float putItemDistance = 1.25f;
     [SerializeField] private LayerMask pickupLayers = ~0;
@@ -54,79 +50,28 @@ public class act_npc_controller : MonoBehaviour
             return false;
         }
 
-        if (command.actions != null)
-        {
-            if (command.actions.Length == 0)
-            {
-                message = string.IsNullOrWhiteSpace(command.message)
-                    ? "No executable NPC actions were provided."
-                    : command.message;
-                return true;
-            }
-
-            if (ContainsStopAction(command.actions))
-            {
-                StopCurrentActions();
-                message = $"{gameObject.name} stopped current actions.";
-                return true;
-            }
-
-            int enqueuedCount = EnqueueActions(command.actions);
-            if (actionQueueRoutine == null)
-            {
-                actionQueueRoutine = StartCoroutine(ProcessActionQueue());
-            }
-
-            message = $"{gameObject.name} enqueued {enqueuedCount} actions. Queued actions: {actionQueue.Count}.";
-            return true;
-        }
-
-        string action = NormalizeAction(command.action);
-
-        if (string.IsNullOrWhiteSpace(action))
+        if (command.actions == null || command.actions.Length == 0)
         {
             message = string.IsNullOrWhiteSpace(command.message)
-                ? "No NPC action was requested."
+                ? "No executable NPC actions were provided."
                 : command.message;
             return true;
         }
 
-        switch (action)
+        if (ContainsStopAction(command.actions))
         {
-            case "stop":
-                StopCurrentActions();
-                message = $"{gameObject.name} stopped current actions.";
-                return true;
-            case "get_item":
-                return TryGetItem(FirstNonEmpty(command.object_id, command.@object, command.object_name, command.item, command.destination), out message);
-            case "put_item":
-                return TryPutItem(FirstNonEmpty(command.object_id, command.@object, command.object_name, command.item, command.destination), out message);
-            case "move":
-                return TryMoveTo(FirstNonEmpty(command.object_id, command.@object, command.object_name, command.destination, command.item), out message);
-            default:
-                message = $"Unsupported NPC action: {command.action}";
-                return false;
-        }
-    }
-
-    private bool TryMoveTo(string destination, out string message)
-    {
-        if (string.IsNullOrWhiteSpace(destination))
-        {
-            message = "Move destination is required.";
-            return false;
+            StopCurrentActions();
+            message = $"{gameObject.name} stopped current actions.";
+            return true;
         }
 
-        SceneObject target = FindSceneObject(destination, "location");
-        if (target == null)
+        int enqueuedCount = EnqueueActions(command.actions);
+        if (actionQueueRoutine == null)
         {
-            message = $"Move destination was not found: {destination}";
-            return false;
+            actionQueueRoutine = StartCoroutine(ProcessActionQueue());
         }
 
-        SetDestination(target.transform.position);
-
-        message = $"{gameObject.name} moving to {destination}.";
+        message = $"{gameObject.name} enqueued {enqueuedCount} actions. Queued actions: {actionQueue.Count}.";
         return true;
     }
 
@@ -148,46 +93,13 @@ public class act_npc_controller : MonoBehaviour
         return enqueuedCount;
     }
 
-    private void PrependActions(params NpcAction[] actions)
-    {
-        Queue<NpcAction> rebuiltQueue = new Queue<NpcAction>();
-
-        foreach (NpcAction action in actions)
-        {
-            if (action != null)
-            {
-                rebuiltQueue.Enqueue(action);
-            }
-        }
-
-        while (actionQueue.Count > 0)
-        {
-            rebuiltQueue.Enqueue(actionQueue.Dequeue());
-        }
-
-        while (rebuiltQueue.Count > 0)
-        {
-            actionQueue.Enqueue(rebuiltQueue.Dequeue());
-        }
-    }
-
-    private static bool ShouldRecoverGetItemByMoving(NpcAction action, string message)
-    {
-        return action != null
-            && action.recovery_attempts <= 0
-            && !string.IsNullOrWhiteSpace(action.target_id)
-            && !string.IsNullOrWhiteSpace(message)
-            && message.IndexOf("not within pickup range", StringComparison.OrdinalIgnoreCase) >= 0;
-    }
-
     private IEnumerator ProcessActionQueue()
     {
         while (actionQueue.Count > 0)
         {
             NpcAction action = actionQueue.Dequeue();
-            string normalizedCommand = NormalizeQueueCommand(action.command);
 
-            switch (normalizedCommand)
+            switch (action == null ? null : action.command)
             {
                 case "STOP":
                     ClearMovement();
@@ -196,10 +108,9 @@ public class act_npc_controller : MonoBehaviour
                     yield break;
 
                 case "MOVE_TO":
-                    if (!TryStartMoveToTarget(action.target_id, out string moveMessage))
+                    if (!TryStartMoveToTarget(action, out string moveMessage))
                     {
                         Debug.LogWarning($"Action queue failed: {moveMessage}");
-                        NotifyActionFailed(action, moveMessage);
                         actionQueue.Clear();
                         actionQueueRoutine = null;
                         yield break;
@@ -210,25 +121,9 @@ public class act_npc_controller : MonoBehaviour
                     break;
 
                 case "GET_ITEM":
-                    if (!TryGetItem(action.target_id, out string getMessage))
+                    if (!TryGetItem(GetActionTarget(action), out string getMessage))
                     {
-                        if (ShouldRecoverGetItemByMoving(action, getMessage))
-                        {
-                            action.recovery_attempts++;
-                            PrependActions(
-                                new NpcAction
-                                {
-                                    action_id = $"{action.action_id}_recover_move",
-                                    command = "MOVE_TO",
-                                    target_id = action.target_id
-                                },
-                                action
-                            );
-                            break;
-                        }
-
                         Debug.LogWarning($"Action queue failed: {getMessage}");
-                        NotifyActionFailed(action, getMessage);
                         actionQueue.Clear();
                         actionQueueRoutine = null;
                         yield break;
@@ -237,10 +132,9 @@ public class act_npc_controller : MonoBehaviour
                     break;
 
                 case "PUT_ITEM":
-                    if (!TryPutItem(action.target_id, out string putMessage))
+                    if (!TryPutItem(GetActionTarget(action), out string putMessage))
                     {
                         Debug.LogWarning($"Action queue failed: {putMessage}");
-                        NotifyActionFailed(action, putMessage);
                         actionQueue.Clear();
                         actionQueueRoutine = null;
                         yield break;
@@ -249,9 +143,8 @@ public class act_npc_controller : MonoBehaviour
                     break;
 
                 default:
-                    string unsupportedMessage = $"Unsupported queued command: {action.command}";
+                    string unsupportedMessage = $"Unsupported queued command: {(action == null ? "null" : action.command)}";
                     Debug.LogWarning($"Action queue failed: {unsupportedMessage}");
-                    NotifyActionFailed(action, unsupportedMessage);
                     actionQueue.Clear();
                     actionQueueRoutine = null;
                     yield break;
@@ -261,16 +154,11 @@ public class act_npc_controller : MonoBehaviour
         actionQueueRoutine = null;
     }
 
-    private void NotifyActionFailed(NpcAction action, string message)
-    {
-        ActionFailed?.Invoke(action, message);
-    }
-
     private bool ContainsStopAction(NpcAction[] actions)
     {
         foreach (NpcAction action in actions)
         {
-            if (action != null && NormalizeQueueCommand(action.command) == "STOP")
+            if (action != null && action.command == "STOP")
             {
                 return true;
             }
@@ -304,11 +192,19 @@ public class act_npc_controller : MonoBehaviour
         }
     }
 
-    private bool TryStartMoveToTarget(string targetId, out string message)
+    private bool TryStartMoveToTarget(NpcAction action, out string message)
     {
+        string targetId = GetActionTarget(action);
         if (string.IsNullOrWhiteSpace(targetId))
         {
-            message = "MOVE_TO target_id is required.";
+            if (action != null && action.position != Vector3.zero)
+            {
+                SetDestination(action.position);
+                message = $"{gameObject.name} moving to position {action.position}.";
+                return true;
+            }
+
+            message = "MOVE_TO target is required.";
             return false;
         }
 
@@ -328,15 +224,21 @@ public class act_npc_controller : MonoBehaviour
     {
         if (string.IsNullOrWhiteSpace(targetId))
         {
-            message = "GET_ITEM target_id is required.";
+            message = "GET_ITEM target is required.";
             return false;
         }
 
         SceneObject target = FindSceneObject(targetId, "item");
-        Item targetItem = target == null ? FindItem(targetId) : FindItemComponent(target);
-        if (targetItem == null)
+        if (target == null)
         {
             message = $"GET_ITEM target was not found: {targetId}";
+            return false;
+        }
+
+        Item targetItem = FindItemComponent(target);
+        if (targetItem == null)
+        {
+            message = $"GET_ITEM target has no item component: {targetId}";
             return false;
         }
 
@@ -362,7 +264,7 @@ public class act_npc_controller : MonoBehaviour
     {
         if (string.IsNullOrWhiteSpace(targetId))
         {
-            message = "PUT_ITEM target_id is required.";
+            message = "PUT_ITEM target is required.";
             return false;
         }
 
@@ -448,14 +350,10 @@ public class act_npc_controller : MonoBehaviour
 
     public bool TryHandleClientFunction(string functionName, ClientFunctionArgs args, out ClientFunctionResult result)
     {
-        string normalizedFunction = string.IsNullOrWhiteSpace(functionName)
-            ? string.Empty
-            : functionName.Trim().ToLowerInvariant();
-
-        switch (normalizedFunction)
+        switch (functionName)
         {
-            case "find_object":
-                result = FindObjectResult(args);
+            case "find_scene_objects":
+                result = FindSceneObjectsResult(args);
                 return result.ok;
             case "get_agent_state":
                 result = AgentStateResult();
@@ -469,36 +367,34 @@ public class act_npc_controller : MonoBehaviour
         }
     }
 
-    private ClientFunctionResult FindObjectResult(ClientFunctionArgs args)
+    private ClientFunctionResult FindSceneObjectsResult(ClientFunctionArgs args)
     {
         string query = args == null ? null : args.query;
         if (string.IsNullOrWhiteSpace(query))
         {
-            return ErrorResult("QUERY_REQUIRED", "find_object requires args.query.");
+            return ErrorResult("QUERY_REQUIRED", "find_scene_objects requires args.query.");
         }
 
         int maxResults = args != null && args.max_results > 0 ? args.max_results : 5;
         string objectType = args == null ? null : args.object_type;
-        List<ClientObjectInfo> matches = new List<ClientObjectInfo>();
         List<SceneObject> sceneObjects = SceneObjectRegistry.SearchClosest(query, objectType, maxResults, transform.position);
+        List<ClientObjectInfo> objects = new List<ClientObjectInfo>();
 
-        foreach (SceneObject candidate in sceneObjects)
+        foreach (SceneObject sceneObject in sceneObjects)
         {
-            matches.Add(CreateObjectInfo(candidate, query));
+            if (sceneObject == null)
+            {
+                continue;
+            }
+
+            objects.Add(CreateObjectInfo(sceneObject));
         }
 
-        if (matches.Count == 0)
-        {
-            AddLegacyItemMatches(query, maxResults, matches);
-        }
-
-        ClientFunctionResult result = new ClientFunctionResult
+        return new ClientFunctionResult
         {
             ok = true,
-            objects = matches.ToArray()
+            objects = objects.ToArray()
         };
-
-        return result;
     }
 
     private ClientFunctionResult AgentStateResult()
@@ -510,7 +406,8 @@ public class act_npc_controller : MonoBehaviour
             {
                 agent_id = gameObject.name,
                 position = transform.position,
-                state = actionQueueRoutine != null ? "busy" : "idle"
+                state = actionQueueRoutine == null ? "idle" : "busy",
+                pickup_radius = pickupRadius
             }
         };
     }
@@ -521,6 +418,32 @@ public class act_npc_controller : MonoBehaviour
         {
             ok = true,
             inventory = inventory == null ? new NPCInventory.InventoryItem[0] : inventory.Snapshot()
+        };
+    }
+
+    private ClientObjectInfo CreateObjectInfo(SceneObject sceneObject)
+    {
+        return new ClientObjectInfo
+        {
+            object_id = sceneObject.ResolvedObjectId,
+            object_name = sceneObject.ResolvedDisplayName,
+            type = sceneObject.objectType.ToString().ToLowerInvariant(),
+            position = sceneObject.transform.position,
+            active = sceneObject.gameObject.activeInHierarchy,
+            distance = Vector3.Distance(transform.position, sceneObject.transform.position)
+        };
+    }
+
+    private static ClientFunctionResult ErrorResult(string code, string message)
+    {
+        return new ClientFunctionResult
+        {
+            ok = false,
+            error = new ClientFunctionError
+            {
+                code = code,
+                message = message
+            }
         };
     }
 
@@ -541,167 +464,9 @@ public class act_npc_controller : MonoBehaviour
         return true;
     }
 
-    private Item FindItem(string name)
-    {
-        SceneObject sceneObject = FindSceneObject(name, "item");
-        if (sceneObject != null)
-        {
-            Item sceneItem = sceneObject.GetComponent<Item>();
-            if (sceneItem != null)
-            {
-                return sceneItem;
-            }
-        }
-
-        Item[] items = FindObjectsByType<Item>(FindObjectsSortMode.None);
-        
-        foreach(Item item in items)
-        {
-            if(ItemMatches(item, name))
-            {
-                return item;
-            }
-        }
-
-        return null;
-    }
-
     private SceneObject FindSceneObject(string queryOrId, string objectType)
     {
         return SceneObjectRegistry.FindClosest(queryOrId, objectType, transform.position);
-    }
-
-    private static void AddLegacyItemMatches(string query, int maxResults, List<ClientObjectInfo> matches)
-    {
-        Item[] items = FindObjectsByType<Item>(FindObjectsSortMode.None);
-
-        foreach (Item candidate in items)
-        {
-            if (!ItemMatches(candidate, query))
-            {
-                continue;
-            }
-
-            matches.Add(CreateObjectInfo(candidate, query));
-            if (matches.Count >= maxResults)
-            {
-                break;
-            }
-        }
-    }
-
-    private static bool ItemMatches(Item item, string query)
-    {
-        if (item == null || string.IsNullOrWhiteSpace(query))
-        {
-            return false;
-        }
-
-        string normalizedQuery = NormalizeSearchQuery(query);
-        string itemName = NormalizeSearchQuery(item.itemName);
-        string objectName = NormalizeSearchQuery(item.gameObject.name);
-
-        return string.Equals(itemName, normalizedQuery, StringComparison.OrdinalIgnoreCase)
-            || string.Equals(objectName, normalizedQuery, StringComparison.OrdinalIgnoreCase)
-            || string.Equals(item.itemId.ToString(), normalizedQuery, StringComparison.OrdinalIgnoreCase)
-            || itemName.IndexOf(normalizedQuery, StringComparison.OrdinalIgnoreCase) >= 0
-            || objectName.IndexOf(normalizedQuery, StringComparison.OrdinalIgnoreCase) >= 0;
-    }
-
-    private static ClientObjectInfo CreateObjectInfo(Item item, string query)
-    {
-        return CreateObjectInfo(item, query, true);
-    }
-
-    private static ClientObjectInfo CreateObjectInfo(Item item, string query, bool reachable)
-    {
-        return new ClientObjectInfo
-        {
-            object_id = item.itemId.ToString(),
-            name = item.itemName,
-            type = "item",
-            position = item.transform.position,
-            status = item.gameObject.activeInHierarchy ? "available" : "disabled",
-            reachable = reachable,
-            confidence = string.Equals(item.itemName, query, StringComparison.OrdinalIgnoreCase) ? 1f : 0.75f
-        };
-    }
-
-    private static ClientObjectInfo CreateObjectInfo(SceneObject sceneObject, string query)
-    {
-        return CreateObjectInfo(sceneObject, query, true);
-    }
-
-    private static ClientObjectInfo CreateObjectInfo(SceneObject sceneObject, string query, bool reachable)
-    {
-        return new ClientObjectInfo
-        {
-            object_id = sceneObject.ResolvedObjectId,
-            name = sceneObject.ResolvedDisplayName,
-            type = sceneObject.objectType.ToString().ToLowerInvariant(),
-            position = sceneObject.transform.position,
-            status = sceneObject.gameObject.activeInHierarchy ? "available" : "disabled",
-            reachable = reachable,
-            confidence = sceneObject.GetMatchConfidence(query)
-        };
-    }
-
-    private static ClientFunctionResult ErrorResult(string code, string message)
-    {
-        return new ClientFunctionResult
-        {
-            ok = false,
-            error = new ClientFunctionError
-            {
-                code = code,
-                message = message
-            }
-        };
-    }
-
-    private static string NormalizeSearchQuery(string query)
-    {
-        if (string.IsNullOrWhiteSpace(query))
-        {
-            return string.Empty;
-        }
-
-        string normalized = query.Trim().ToLowerInvariant();
-        string[] genericSuffixes =
-        {
-            " location",
-            " position",
-            " place",
-            " spot",
-            " area",
-            " nearby",
-            " near",
-            " around"
-        };
-
-        foreach (string genericSuffix in genericSuffixes)
-        {
-            normalized = normalized.Replace(genericSuffix, string.Empty);
-        }
-
-        string[] genericPrefixes =
-        {
-            "location of ",
-            "position of ",
-            "place of ",
-            "near ",
-            "around "
-        };
-
-        foreach (string genericPrefix in genericPrefixes)
-        {
-            if (normalized.StartsWith(genericPrefix, StringComparison.Ordinal))
-            {
-                normalized = normalized.Substring(genericPrefix.Length);
-            }
-        }
-
-        return normalized.Trim();
     }
 
     private void SetDestination(in Vector3 position)
@@ -709,29 +474,6 @@ public class act_npc_controller : MonoBehaviour
         hasActiveDestination = true;
         navAgent.isStopped = false;
         navAgent.SetDestination(position);    
-    }
-
-    private static string NormalizeAction(string action)
-    {
-        if (string.IsNullOrWhiteSpace(action))
-        {
-            return string.Empty;
-        }
-
-        string normalizedAction = action.Trim().ToLowerInvariant();
-        if (normalizedAction == "null" || normalizedAction == "none" || normalizedAction == "no_action")
-        {
-            return string.Empty;
-        }
-
-        return normalizedAction;
-    }
-
-    private static string NormalizeQueueCommand(string command)
-    {
-        return string.IsNullOrWhiteSpace(command)
-            ? string.Empty
-            : command.Trim().ToUpperInvariant();
     }
 
     private static string FirstNonEmpty(params string[] values)
@@ -747,16 +489,14 @@ public class act_npc_controller : MonoBehaviour
         return null;
     }
 
+    private static string GetActionTarget(NpcAction action)
+    {
+        return action == null ? null : FirstNonEmpty(action.object_id, action.object_name);
+    }
+
     [System.Serializable]
     public class NpcCommand
     {
-        public string action;
-        public string destination;
-        public string item;
-        public string @object;
-        public string object_name;
-        public string object_id;
-        public Vector3 position;
         public string message;
         public NpcAction[] actions;
     }
@@ -766,20 +506,20 @@ public class act_npc_controller : MonoBehaviour
     {
         public string action_id;
         public string command;
-        public string target_id;
-        public int recovery_attempts;
+        public string object_name;
+        public string object_id;
+        public Vector3 position;
     }
 
-    [Serializable]
+    [System.Serializable]
     public class ClientFunctionArgs
     {
         public string query;
         public string object_type;
-        public string object_id;
         public int max_results;
     }
 
-    [Serializable]
+    [System.Serializable]
     public class ClientFunctionResult
     {
         public bool ok;
@@ -789,27 +529,27 @@ public class act_npc_controller : MonoBehaviour
         public ClientFunctionError error;
     }
 
-    [Serializable]
+    [System.Serializable]
     public class ClientObjectInfo
     {
         public string object_id;
-        public string name;
+        public string object_name;
         public string type;
         public Vector3 position;
-        public string status;
-        public bool reachable;
-        public float confidence;
+        public bool active;
+        public float distance;
     }
 
-    [Serializable]
+    [System.Serializable]
     public class AgentState
     {
         public string agent_id;
         public Vector3 position;
         public string state;
+        public float pickup_radius;
     }
 
-    [Serializable]
+    [System.Serializable]
     public class ClientFunctionError
     {
         public string code;
